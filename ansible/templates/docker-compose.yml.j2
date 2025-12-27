@@ -1,0 +1,57 @@
+services:
+  # Nginx Proxy Manager: Handles HTTPS and routes joplin.domain.com to the right app
+  reverse-proxy:
+    image: nginx:stable-alpine
+    container_name: reverse-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Mounts your custom .conf files into Nginx
+      - /opt/notes-stack/nginx:/etc/nginx/conf.d:ro
+      # SSL Certificates (See Note Below)
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - joplin-server
+      - trilium-server
+
+  # TriliumNext: Stores everything in a single SQLite file on the Block Storage
+  trilium:
+    image: triliumnext/notes:latest
+    container_name: trilium-server
+    restart: unless-stopped
+    volumes:
+      # If block storage is enabled, use the mount. Otherwise, use local path.
+      - {{ enable_block_storage | ternary('/mnt/notes_data/trilium', './data/trilium') }}:/home/node/trilium-data
+
+  # Joplin Database: Stores note text and metadata
+  joplin-db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      - POSTGRES_PASSWORD={{ postgres_pwd }}
+      - POSTGRES_USER=joplin
+      - POSTGRES_DB=joplin
+    volumes:
+      - /mnt/notes_data/joplin-db:/var/lib/postgresql/data
+
+  # Joplin Server: Uses S3 for all images and PDF attachments
+  joplin-server:
+    image: joplin/server:latest
+    container_name: joplin-server
+    depends_on:
+      - joplin-db
+    environment:
+      - APP_BASE_URL=https://{{ joplin_sub }}.{{ domain }}
+      - DB_CLIENT=pg
+      - POSTGRES_DATABASE=joplin
+      - POSTGRES_USER=joplin
+      - POSTGRES_PASSWORD={{ postgres_pwd }}
+      - POSTGRES_HOST=joplin-db
+      # If S3 is enabled, use the S3 driver. If not, use the Database (default).
+      {% if enable_s3_storage | bool %}
+      - STORAGE_DRIVER=Type=S3; Region={{ s3_region }}; AccessKeyId={{ s3_key }}; SecretAccessKeyId={{ s3_secret }}; Bucket={{ s3_bucket }}; Endpoint=https://{{ s3_region }}.digitaloceanspaces.com
+      {% else %}
+      - STORAGE_DRIVER=Type=Database
+      {% endif %}

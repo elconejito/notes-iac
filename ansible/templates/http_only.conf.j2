@@ -1,0 +1,14 @@
+# Temporary file for Let's Encrypt validation
+server {
+    listen 80;
+    server_name {{ joplin_sub }}.{{ domain }} {{ trilium_sub }}.{{ domain }};
+
+    # The 'well-known' location is where Certbot places its temporary challenge files
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 200 "Bootstraping SSL... Please wait.";
+    }
+}

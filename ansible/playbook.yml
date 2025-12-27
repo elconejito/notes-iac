@@ -1,0 +1,75 @@
+- hosts: all
+  become: yes
+  vars:
+    stack_path: "/opt/notes-stack"
+    local_data: "/opt/notes-stack/data"
+    mount_path: "/mnt/notes_data"
+
+  tasks:
+    # 1. PREREQUISITES
+    - name: Install RSync for migrations
+      apt: name=rsync state=present update_cache=yes
+
+    # 2. OPTIONAL BLOCK STORAGE SETUP
+    - name: Handle Block Storage Mounting
+      block:
+        - name: Format and Mount Volume
+          mount:
+            path: "{{ mount_path }}"
+            src: /dev/disk/by-id/scsi-0DO_Volume_notes-data-vol
+            fstype: ext4
+            state: mounted
+        - name: Ensure permissions on mount
+          file: path={{ mount_path }} state=directory owner=root group=root mode=0755
+      when: enable_block_storage | bool
+
+    # 3. DATA MIGRATION LOGIC (Only runs if switching from Local to Block)
+    - name: Check if migration is needed
+      stat: path={{ local_data }}
+      register: local_dir_check
+
+    - name: Check if Block Storage is empty
+      find: paths="{{ mount_path }}"
+      register: mount_contents
+      when: enable_block_storage | bool
+
+    - name: Perform Migration to Block Storage
+      block:
+        - name: Stop stack for safe migration
+          command: docker-compose -f {{ stack_path }}/docker-compose.yml stop
+          ignore_errors: yes # In case it's a first-time run and not started yet
+
+        - name: Sync data from Local to Block Storage
+          command: "rsync -avz {{ local_data }}/ {{ mount_path }}/"
+          
+        - name: Rename old local data to prevent accidental use
+          command: "mv {{ local_data }} {{ local_data }}_backup_{{ ansible_date_time.date }}"
+      when: 
+        - enable_block_storage | bool
+        - local_dir_check.stat.exists 
+        - mount_contents.matched == 0
+
+    # 4. DEPLOY CONFIGURATIONS
+    - name: Create required subdirectories
+      file:
+        path: "{{ item }}"
+        state: directory
+      loop:
+        - "{{ stack_path }}/nginx"
+        - "{{ (enable_block_storage | bool) | ternary(mount_path + '/joplin-db', local_data + '/joplin-db') }}"
+        - "{{ (enable_block_storage | bool) | ternary(mount_path + '/trilium', local_data + '/trilium') }}"
+
+    - name: Deploy Docker Compose and Nginx Templates
+      template:
+        src: "templates/{{ item.src }}"
+        dest: "{{ stack_path }}/{{ item.dest }}"
+      loop:
+        - { src: 'docker-compose.yml.j2', dest: 'docker-compose.yml' }
+        - { src: 'joplin.conf.j2', dest: 'nginx/joplin.conf' }
+        - { src: 'trilium.conf.j2', dest: 'nginx/trilium.conf' }
+      register: config_updated
+
+    # 5. START STACK
+    - name: Start/Restart Docker Stack
+      command: docker-compose -f {{ stack_path }}/docker-compose.yml up -d
+      when: config_updated.changed

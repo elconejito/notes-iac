@@ -1,0 +1,25 @@
+# Terraform artifacts
+*.tfstate
+*.tfstate.*
+crash.log
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+*.tfvars
+
+# Ansible artifacts
+*.retry
+*.log
+ansible/retry/
+ansible.cfg
+inventory.ini
+host_vars/
+group_vars/
+.cache/
+.vagrant/
+
+# General sensitive and system files
+.env
+*.bak
+*.swp
+.DS_Store

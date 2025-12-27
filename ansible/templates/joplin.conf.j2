@@ -1,0 +1,20 @@
+server {
+    listen 80;
+    server_name {{ joplin_sub }}.{{ domain }};
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name {{ joplin_sub }}.{{ domain }};
+
+    ssl_certificate /etc/letsencrypt/live/{{ joplin_sub }}.{{ domain }}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{ joplin_sub }}.{{ domain }}/privkey.pem;
+
+    location / {
+        proxy_pass http://joplin-server:22300;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        client_max_body_size 100M;
+    }
+}
