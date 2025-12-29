@@ -7,10 +7,44 @@
 
   tasks:
     # 1. PREREQUISITES
-    - name: Install RSync for migrations
-      apt: name=rsync state=present update_cache=yes
+    - name: Install system dependencies
+      apt:
+        name: [rsync, apt-transport-https, ca-certificates, curl, software-properties-common, gnupg]
+        state: present
+        update_cache: yes
 
-    # 2. OPTIONAL BLOCK STORAGE SETUP
+    # 2. INSTALL DOCKER & DOCKER-COMPOSE
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker Repository
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+        state: present
+
+    - name: Install Docker Engine
+      apt:
+        name: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin]
+        state: present
+        update_cache: yes
+
+    - name: Ensure Docker service is started
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    # Create a symbolic link so 'docker-compose' command works (the plugin uses 'docker compose')
+    - name: Create docker-compose alias
+      file:
+        src: /usr/bin/docker
+        dest: /usr/local/bin/docker-compose
+        state: link
+      ignore_errors: yes
+
+    # 3. OPTIONAL BLOCK STORAGE SETUP
     - name: Handle Block Storage Mounting
       block:
         - name: Format and Mount Volume
@@ -23,7 +57,7 @@
           file: path={{ mount_path }} state=directory owner=root group=root mode=0755
       when: enable_block_storage | bool
 
-    # 3. DATA MIGRATION LOGIC (Only runs if switching from Local to Block)
+    # 4. DATA MIGRATION LOGIC
     - name: Check if migration is needed
       stat: path={{ local_data }}
       register: local_dir_check
@@ -36,8 +70,8 @@
     - name: Perform Migration to Block Storage
       block:
         - name: Stop stack for safe migration
-          command: docker-compose -f {{ stack_path }}/docker-compose.yml stop
-          ignore_errors: yes # In case it's a first-time run and not started yet
+          shell: "docker compose -f {{ stack_path }}/docker-compose.yml stop"
+          ignore_errors: yes
 
         - name: Sync data from Local to Block Storage
           command: "rsync -avz {{ local_data }}/ {{ mount_path }}/"
@@ -49,27 +83,33 @@
         - local_dir_check.stat.exists 
         - mount_contents.matched == 0
 
-    # 4. DEPLOY CONFIGURATIONS
+    # 5. DEPLOY CONFIGURATIONS
     - name: Create required subdirectories
       file:
         path: "{{ item }}"
         state: directory
       loop:
+        - "{{ stack_path }}"
         - "{{ stack_path }}/nginx"
         - "{{ (enable_block_storage | bool) | ternary(mount_path + '/joplin-db', local_data + '/joplin-db') }}"
         - "{{ (enable_block_storage | bool) | ternary(mount_path + '/trilium', local_data + '/trilium') }}"
 
+    - name: Deploy Docker Compose file
+      template:
+        src: templates/docker-compose.yml.j2
+        dest: "{{ stack_path }}/docker-compose.yml"
+      register: compose_updated
+
     - name: Deploy Docker Compose and Nginx Templates
       template:
-        src: "templates/{{ item.src }}"
-        dest: "{{ stack_path }}/{{ item.dest }}"
+        src: "templates/{{ item }}.j2"
+        dest: "{{ stack_path }}/nginx/{{ item }}"
       loop:
-        - { src: 'docker-compose.yml.j2', dest: 'docker-compose.yml' }
-        - { src: 'joplin.conf.j2', dest: 'nginx/joplin.conf' }
-        - { src: 'trilium.conf.j2', dest: 'nginx/trilium.conf' }
+        - joplin.conf
+        - trilium.conf
       register: config_updated
 
-    # 5. START STACK
+    # 6. START STACK
     - name: Start/Restart Docker Stack
-      command: docker-compose -f {{ stack_path }}/docker-compose.yml up -d
-      when: config_updated.changed
+      shell: "docker compose -f {{ stack_path }}/docker-compose.yml up -d --force-recreate"
+      when: config_updated.changed or compose_updated.changed

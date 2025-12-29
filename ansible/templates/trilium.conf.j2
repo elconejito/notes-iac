@@ -1,12 +1,20 @@
-# trilium.conf.j2
-
-# Redirect HTTP to HTTPS
+# Port 80: Redirect to HTTPS and handle Certbot
 server {
     listen 80;
     server_name {{ trilium_sub }}.{{ domain }};
-    return 301 https://$host$request_uri;
+    
+    # Required for Let's Encrypt validation
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
 }
 
+# Port 443: The Actual App (Only active if SSL certs exist)
+{% if enable_ssl | default(false) | bool %}
 server {
     listen 443 ssl;
     server_name {{ trilium_sub }}.{{ domain }};
@@ -20,20 +28,26 @@ server {
     ssl_prefer_server_ciphers on;
 
     location / {
-        proxy_pass http://trilium-server:8080;
+        # Use Docker's internal DNS resolver (deferred resolution)
+        resolver 127.0.0.11 valid=10s;
+        set $upstream_trilium trilium-server;
+        # Protocol and Port MUST be outside the variable for reliable proxying
+        proxy_pass http://$upstream_trilium:8080;
+        
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # WebSocket support (CRITICAL for Trilium sync)
+        # WebSocket support
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
 
         # Increase timeouts for large initial syncs
-        proxy_read_timeout 300s;
+        proxy_read_timeout 86400;
         proxy_connect_timeout 300s;
         proxy_send_timeout 300s;
     }
 }
+{% endif %}

@@ -1,25 +1,34 @@
-# Terraform artifacts
+# === Terraform ===
 *.tfstate
 *.tfstate.*
 crash.log
 .terraform/
-.terraform.lock.hcl
+# We REMOVED .terraform.lock.hcl from here so it CAN be committed
 terraform.tfvars
 *.tfvars
 
-# Ansible artifacts
+# === Ansible ===
 *.retry
 *.log
 ansible/retry/
-ansible.cfg
-inventory.ini
-host_vars/
-group_vars/
-.cache/
-.vagrant/
+# Only ignore inventory if it's auto-generated/sensitive
+# inventory.ini 
 
-# General sensitive and system files
+# === Environment & Secrets ===
 .env
+.env.*
+!.env.example
+
+# === System & IDE ===
+.DS_Store
+.idea/
+.vscode/
+.cursor/
 *.bak
 *.swp
-.DS_Store
+
+# === Docker/Local Data ===
+# We ignore the local data folder so your 1GB of notes 
+# doesn't get pushed to your GitHub repository!
+ansible/data/
+/opt/notes-stack/data/

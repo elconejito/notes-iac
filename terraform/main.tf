@@ -26,10 +26,31 @@ variable "trilium_subdomain" {}
 variable "enable_block_storage" { type = bool }
 
 # 3. DIGITALOCEAN HARDWARE
+# 1. Get the fingerprint of your local public key
+# This uses a local-exec or a simple provider function to calculate it
+locals {
+  # Terraform can't natively calculate MD5 fingerprints easily, 
+  # so we will use the data source to filter all keys.
+}
+
+# 2. Look for the key by its public_key content
+data "digitalocean_ssh_keys" "filter" {
+  filter {
+    key    = "public_key"
+    values = [trimspace(file(var.ssh_public_key_path))]
+  }
+}
+
+# 3. Use the existing key if found, otherwise create a new one
 resource "digitalocean_ssh_key" "project_key" {
+  count      = length(data.digitalocean_ssh_keys.filter.ssh_keys) > 0 ? 0 : 1
   name       = "Notes-System-Key"
-  # terraform expands the ~ automatically if passed correctly from the shell
   public_key = file(var.ssh_public_key_path)
+}
+
+# 4. Use the ID from the search or the new resource
+locals {
+  final_ssh_key_id = length(data.digitalocean_ssh_keys.filter.ssh_keys) > 0 ? data.digitalocean_ssh_keys.filter.ssh_keys[0].id : digitalocean_ssh_key.project_key[0].id
 }
 
 resource "digitalocean_volume" "notes_data" {
@@ -48,7 +69,7 @@ resource "digitalocean_droplet" "note_server" {
   size   = "s-1vcpu-2gb"
   # This assumes you have an SSH key added to your DO account
   # Replace with your actual key name or ID
-  ssh_keys = [digitalocean_ssh_key.project_key.id] 
+  ssh_keys = [local.final_ssh_key_id]
 }
 
 resource "digitalocean_volume_attachment" "notes_attach" {
@@ -57,20 +78,60 @@ resource "digitalocean_volume_attachment" "notes_attach" {
   volume_id  = digitalocean_volume.notes_data[0].id
 }
 
+resource "digitalocean_firewall" "notes_firewall" {
+  name = "notes-stack-firewall"
+  droplet_ids = [digitalocean_droplet.note_server.id]
+
+  # 1. ALLOW SSH (Don't skip this!)
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "22"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
+  # 2. ALLOW HTTP (For Let's Encrypt and Redirects)
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "80"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
+  # 3. ALLOW HTTPS (Your main traffic)
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "443"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
+  # 4. ALLOW ALL OUTBOUND
+  # Servers need to talk to the internet to download updates/Docker images
+  outbound_rule {
+    protocol              = "tcp"
+    port_range            = "1-65535"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+  
+  outbound_rule {
+    protocol              = "udp"
+    port_range            = "1-65535"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+}
+
 # 4. CLOUDFLARE DNS RECORDS
-resource "cloudflare_record" "joplin" {
+resource "cloudflare_dns_record" "joplin" {
   zone_id = var.cloudflare_zone_id
   name    = var.joplin_subdomain
-  value   = digitalocean_droplet.note_server.ipv4_address
+  content = digitalocean_droplet.note_server.ipv4_address # "value" changed to "content"
   type    = "A"
   proxied = false
   ttl     = 60
 }
 
-resource "cloudflare_record" "trilium" {
+resource "cloudflare_dns_record" "trilium" {
   zone_id = var.cloudflare_zone_id
   name    = var.trilium_subdomain
-  value   = digitalocean_droplet.note_server.ipv4_address
+  content = digitalocean_droplet.note_server.ipv4_address # "value" changed to "content"
   type    = "A"
   proxied = false
   ttl     = 60
