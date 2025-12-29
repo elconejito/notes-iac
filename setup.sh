@@ -1,4 +1,68 @@
 #!/bin/bash
+
+# Show usage/help
+if [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]] || [[ "$1" == "help" ]]; then
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  (no args)        Deploy infrastructure and configure server"
+    echo "  --destroy        Destroy all infrastructure"
+    echo "  --help, -h       Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  $0                # Deploy infrastructure"
+    echo "  $0 --destroy      # Destroy infrastructure"
+    exit 0
+fi
+
+# Check for destroy argument
+if [[ "$1" == "--destroy" ]]; then
+    echo "🗑️  Destroying all infrastructure..."
+    
+    # Load minimal variables from .env for tear-down
+    if [ -f .env ]; then
+        set -a; source .env; set +a
+    else
+        echo "❌ Error: .env file not found."
+        exit 1
+    fi
+    
+    # Get SSH key paths (needed for terraform)
+    PRIVATE_KEY=$(eval echo ${SSH_PRIVATE_KEY_PATH:-""})
+    PUBLIC_KEY=$(eval echo ${SSH_PUBLIC_KEY_PATH:-""})
+    
+    # Navigate to terraform directory
+    cd terraform
+    
+    # Check if terraform is initialized
+    if [ ! -d ".terraform" ]; then
+        echo "⚠️  Terraform not initialized. Running terraform init..."
+        terraform init
+    fi
+    
+    # Destroy infrastructure with same variables as apply
+    echo "🔥 Destroying infrastructure..."
+    terraform destroy -auto-approve \
+      -var="do_token=${DIGITALOCEAN_TOKEN}" \
+      -var="ssh_public_key_path=${PUBLIC_KEY}" \
+      -var="enable_block_storage=${ENABLE_BLOCK_STORAGE}" \
+      -var="cloudflare_api_token=${CLOUDFLARE_API_TOKEN}" \
+      -var="cloudflare_zone_id=${CLOUDFLARE_ZONE_ID}" \
+      -var="domain=${DOMAIN_NAME}" \
+      -var="joplin_subdomain=${JOPLIN_SUBDOMAIN}" \
+      -var="trilium_subdomain=${TRILIUM_SUBDOMAIN}"
+    
+    if [ $? -eq 0 ]; then
+        echo "✅ Infrastructure successfully destroyed!"
+        echo "💡 Note: DNS records and any manually created resources may need cleanup."
+    else
+        echo "❌ Error: Terraform destroy failed. Check the logs above."
+        exit 1
+    fi
+    
+    exit 0
+fi
+
 # Load variables from .env
 if [ -f .env ]; then
     set -a; source .env; set +a
