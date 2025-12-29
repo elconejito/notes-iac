@@ -95,6 +95,17 @@ S3_VARS=(
     "SPACES_BUCKET_NAME"
 )
 
+# Variables only needed if email is enabled
+MAILER_VARS=(
+    "MAILER_HOST"
+    "MAILER_PORT"
+    "MAILER_SECURE"
+    "MAILER_USER"
+    "MAILER_PASSWORD"
+    "MAILER_FROM_EMAIL"
+    "MAILER_FROM_NAME"
+)
+
 MISSING_VARS=()
 
 # Check Core Variables
@@ -109,6 +120,15 @@ if [[ "$ENABLE_S3_STORAGE" == "true" ]]; then
     for VAR in "${S3_VARS[@]}"; do
         if [[ -z "${!VAR}" ]]; then
             MISSING_VARS+=("$VAR (Required because ENABLE_S3_STORAGE is true)")
+        fi
+    done
+fi
+
+# Check Mailer Variables ONLY if MAILER_ENABLED is true
+if [[ "$MAILER_ENABLED" == "true" ]]; then
+    for VAR in "${MAILER_VARS[@]}"; do
+        if [[ -z "${!VAR}" ]]; then
+            MISSING_VARS+=("$VAR (Required because MAILER_ENABLED is true)")
         fi
     done
 fi
@@ -203,7 +223,7 @@ ansible-playbook -i "$IP," ansible/playbook.yml \
   --user root \
   --private-key "$PRIVATE_KEY" \
   --ssh-common-args='-o IdentitiesOnly=yes' \
-  --extra-vars "postgres_pwd=$POSTGRES_PASSWORD enable_block_storage=$ENABLE_BLOCK_STORAGE enable_s3_storage=$ENABLE_S3_STORAGE s3_key=$SPACES_ACCESS_KEY_ID s3_secret=$SPACES_SECRET_ACCESS_KEY s3_bucket=$SPACES_BUCKET_NAME s3_region=$DO_REGION domain=$DOMAIN_NAME joplin_sub=$JOPLIN_SUBDOMAIN trilium_sub=$TRILIUM_SUBDOMAIN certbot_mode=$CERTBOT_MODE acme_email=$ACME_EMAIL"
+  --extra-vars "postgres_pwd=$POSTGRES_PASSWORD enable_block_storage=$ENABLE_BLOCK_STORAGE enable_s3_storage=$ENABLE_S3_STORAGE s3_key=$SPACES_ACCESS_KEY_ID s3_secret=$SPACES_SECRET_ACCESS_KEY s3_bucket=$SPACES_BUCKET_NAME s3_region=$DO_REGION domain=$DOMAIN_NAME joplin_sub=$JOPLIN_SUBDOMAIN trilium_sub=$TRILIUM_SUBDOMAIN certbot_mode=$CERTBOT_MODE acme_email=$ACME_EMAIL mailer_enabled=${MAILER_ENABLED:-false} mailer_host=${MAILER_HOST:-} mailer_port=${MAILER_PORT:-} mailer_secure=${MAILER_SECURE:-false} mailer_user=${MAILER_USER:-} mailer_password=${MAILER_PASSWORD:-} mailer_from_email=${MAILER_FROM_EMAIL:-} mailer_from_name=${MAILER_FROM_NAME:-}"
 
 # Add this check right after the ansible-playbook command
 if [ $? -ne 0 ]; then
@@ -252,7 +272,7 @@ fi
       --user root \
       --private-key "$PRIVATE_KEY" \
       --ssh-common-args='-o IdentitiesOnly=yes' \
-      --extra-vars "enable_ssl=true postgres_pwd=$POSTGRES_PASSWORD enable_block_storage=$ENABLE_BLOCK_STORAGE enable_s3_storage=$ENABLE_S3_STORAGE s3_key=$SPACES_ACCESS_KEY_ID s3_secret=$SPACES_SECRET_ACCESS_KEY s3_bucket=$SPACES_BUCKET_NAME s3_region=$DO_REGION domain=$DOMAIN_NAME joplin_sub=$JOPLIN_SUBDOMAIN trilium_sub=$TRILIUM_SUBDOMAIN certbot_mode=$CERTBOT_MODE acme_email=$ACME_EMAIL"
+      --extra-vars "enable_ssl=true postgres_pwd=$POSTGRES_PASSWORD enable_block_storage=$ENABLE_BLOCK_STORAGE enable_s3_storage=$ENABLE_S3_STORAGE s3_key=$SPACES_ACCESS_KEY_ID s3_secret=$SPACES_SECRET_ACCESS_KEY s3_bucket=$SPACES_BUCKET_NAME s3_region=$DO_REGION domain=$DOMAIN_NAME joplin_sub=$JOPLIN_SUBDOMAIN trilium_sub=$TRILIUM_SUBDOMAIN certbot_mode=$CERTBOT_MODE acme_email=$ACME_EMAIL mailer_enabled=${MAILER_ENABLED:-false} mailer_host=${MAILER_HOST:-} mailer_port=${MAILER_PORT:-} mailer_secure=${MAILER_SECURE:-false} mailer_user=${MAILER_USER:-} mailer_password=${MAILER_PASSWORD:-} mailer_from_email=${MAILER_FROM_EMAIL:-} mailer_from_name=${MAILER_FROM_NAME:-}"
 
 echo "🎉 DEPLOYMENT COMPLETE!"
 echo "------------------------------------------------"

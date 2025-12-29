@@ -50,3 +50,13 @@ services:
       POSTGRES_PASSWORD: "{{ postgres_pwd }}"
       POSTGRES_HOST: "joplin-db"
       STORAGE_DRIVER: "{% if enable_s3_storage | bool %}Type=S3; Region={{ s3_region }}; AccessKeyId={{ s3_key }}; SecretAccessKey={{ s3_secret }}; Bucket={{ s3_bucket }}; Endpoint=https://{{ s3_region }}.digitaloceanspaces.com{% else %}Type=Database{% endif %}"
+      {% if mailer_enabled | default(false) | bool %}
+      MAILER_ENABLED: "1"
+      MAILER_HOST: "{{ mailer_host }}"
+      MAILER_PORT: "{{ mailer_port }}"
+      MAILER_SECURE: "{{ mailer_secure }}"
+      MAILER_USER: "{{ mailer_user }}"
+      MAILER_PASSWORD: "{{ mailer_password }}"
+      MAILER_FROM_EMAIL: "{{ mailer_from_email }}"
+      MAILER_FROM_NAME: "{{ mailer_from_name }}"
+      {% endif %}
