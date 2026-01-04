@@ -239,40 +239,112 @@ fi
 
 echo "🔒 Step 3: Checking SSL Certificates on Remote Server..."
 
+# Validate CERTBOT_MODE
+if [ "$CERTBOT_MODE" != "dry-run" ] && [ "$CERTBOT_MODE" != "staging" ] && [ "$CERTBOT_MODE" != "production" ]; then
+    echo "❌ Error: CERTBOT_MODE must be one of: dry-run, staging, or production"
+    echo "   Current value: $CERTBOT_MODE"
+    exit 1
+fi
+
 # 1. Check if certificates exist ON THE SERVER
 # We use SSH to check the directory status on the remote IP
-if ! ssh -i "$PRIVATE_KEY" -o IdentitiesOnly=yes root@$IP "[ -d /etc/letsencrypt/live/$JOPLIN_SUBDOMAIN.$DOMAIN_NAME ]"; then
-    echo "📜 No certificates found. Requesting new SSL certificates..."
-    
-    # 2. Run Certbot via Docker ON THE SERVER
-    # Note the escaped quotes and variables so they pass through SSH correctly
-    ssh -i "$PRIVATE_KEY" -o IdentitiesOnly=yes root@$IP "docker run --rm \
-      -v /etc/letsencrypt:/etc/letsencrypt \
-      -v /opt/notes-stack/certbot-www:/var/www/certbot \
-      certbot/certbot certonly --webroot \
-      -w /var/www/certbot \
-      -d $JOPLIN_SUBDOMAIN.$DOMAIN_NAME \
-      -d $TRILIUM_SUBDOMAIN.$DOMAIN_NAME \
-      --email $ACME_EMAIL --agree-tos --no-eff-email --non-interactive"
+# Check if both certificates exist
+JOPLIN_CERT_EXISTS=$(ssh -i "$PRIVATE_KEY" -o IdentitiesOnly=yes root@$IP "[ -d /etc/letsencrypt/live/$JOPLIN_SUBDOMAIN.$DOMAIN_NAME ] && echo 'yes' || echo 'no'")
+TRILIUM_CERT_EXISTS=$(ssh -i "$PRIVATE_KEY" -o IdentitiesOnly=yes root@$IP "[ -d /etc/letsencrypt/live/$TRILIUM_SUBDOMAIN.$DOMAIN_NAME ] && echo 'yes' || echo 'no'")
 
-    if [ $? -ne 0 ]; then
-        echo "❌ Error: Certbot failed to obtain certificates."
-        exit 1
+if [ "$JOPLIN_CERT_EXISTS" != "yes" ] || [ "$TRILIUM_CERT_EXISTS" != "yes" ]; then
+    echo "📜 Missing certificates. Requesting SSL certificates for each domain..."
+    
+    # 2. Run Certbot via Docker ON THE SERVER for Joplin domain (if missing)
+    if [ "$JOPLIN_CERT_EXISTS" != "yes" ]; then
+        # Build certbot command with appropriate flags based on CERTBOT_MODE
+        CERTBOT_CMD="certbot/certbot certonly --webroot -w /var/www/certbot -d $JOPLIN_SUBDOMAIN.$DOMAIN_NAME --email $ACME_EMAIL --agree-tos --no-eff-email --non-interactive"
+        
+        # Add appropriate flags based on CERTBOT_MODE
+        if [ "$CERTBOT_MODE" = "dry-run" ]; then
+            CERTBOT_CMD="$CERTBOT_CMD --dry-run"
+            echo "  - Running DRY-RUN for certificate request for $JOPLIN_SUBDOMAIN.$DOMAIN_NAME..."
+        elif [ "$CERTBOT_MODE" = "staging" ]; then
+            CERTBOT_CMD="$CERTBOT_CMD --staging"
+            echo "  - Requesting STAGING certificate for $JOPLIN_SUBDOMAIN.$DOMAIN_NAME..."
+        else
+            # production mode (default)
+            echo "  - Requesting PRODUCTION certificate for $JOPLIN_SUBDOMAIN.$DOMAIN_NAME..."
+        fi
+        
+        ssh -i "$PRIVATE_KEY" -o IdentitiesOnly=yes root@$IP "docker run --rm \
+          -v /etc/letsencrypt:/etc/letsencrypt \
+          -v /opt/notes-stack/certbot-www:/var/www/certbot \
+          $CERTBOT_CMD"
+
+        if [ $? -ne 0 ]; then
+            echo "❌ Error: Certbot failed to obtain certificate for $JOPLIN_SUBDOMAIN.$DOMAIN_NAME."
+            exit 1
+        fi
+    else
+        echo "  - Certificate for $JOPLIN_SUBDOMAIN.$DOMAIN_NAME already exists."
     fi
 
-    echo "🔄 Certificates obtained. Re-running Ansible to enable SSL..."
+    # 3. Run Certbot via Docker ON THE SERVER for Trilium domain (if missing)
+    if [ "$TRILIUM_CERT_EXISTS" != "yes" ]; then
+        # Build certbot command with appropriate flags based on CERTBOT_MODE
+        CERTBOT_CMD="certbot/certbot certonly --webroot -w /var/www/certbot -d $TRILIUM_SUBDOMAIN.$DOMAIN_NAME --email $ACME_EMAIL --agree-tos --no-eff-email --non-interactive"
+        
+        # Add appropriate flags based on CERTBOT_MODE
+        if [ "$CERTBOT_MODE" = "dry-run" ]; then
+            CERTBOT_CMD="$CERTBOT_CMD --dry-run"
+            echo "  - Running DRY-RUN for certificate request for $TRILIUM_SUBDOMAIN.$DOMAIN_NAME..."
+        elif [ "$CERTBOT_MODE" = "staging" ]; then
+            CERTBOT_CMD="$CERTBOT_CMD --staging"
+            echo "  - Requesting STAGING certificate for $TRILIUM_SUBDOMAIN.$DOMAIN_NAME..."
+        else
+            # production mode (default)
+            echo "  - Requesting PRODUCTION certificate for $TRILIUM_SUBDOMAIN.$DOMAIN_NAME..."
+        fi
+        
+        ssh -i "$PRIVATE_KEY" -o IdentitiesOnly=yes root@$IP "docker run --rm \
+          -v /etc/letsencrypt:/etc/letsencrypt \
+          -v /opt/notes-stack/certbot-www:/var/www/certbot \
+          $CERTBOT_CMD"
+
+        if [ $? -ne 0 ]; then
+            echo "❌ Error: Certbot failed to obtain certificate for $TRILIUM_SUBDOMAIN.$DOMAIN_NAME."
+            exit 1
+        fi
+    else
+        echo "  - Certificate for $TRILIUM_SUBDOMAIN.$DOMAIN_NAME already exists."
+    fi
+
+    if [ "$CERTBOT_MODE" = "dry-run" ]; then
+        echo "⚠️  DRY-RUN completed. No real certificates were created."
+        echo "💡 Set CERTBOT_MODE=staging or CERTBOT_MODE=production in your .env file to create real certificates."
+        SSL_ENABLED="false"
+    elif [ "$CERTBOT_MODE" = "staging" ]; then
+        echo "🔄 Staging certificates obtained. Re-running Ansible to enable SSL..."
+        echo "⚠️  Note: Staging certificates are for testing only and will show warnings in browsers."
+        SSL_ENABLED="true"
+    else
+        # production mode
+        echo "🔄 Production certificates obtained. Re-running Ansible to enable SSL..."
+        SSL_ENABLED="true"
+    fi
     
 else
     echo "✅ Certificates already exist. Skipping Certbot."
+    SSL_ENABLED="true"
 fi
 
-    # 3. Final Ansible Pass (Enabling SSL)
-    # We pass enable_ssl=true as an extra-var so the playbook picks the .ssl.j2 templates
-    ansible-playbook -i "$IP," ansible/playbook.yml \
-      --user root \
-      --private-key "$PRIVATE_KEY" \
-      --ssh-common-args='-o IdentitiesOnly=yes' \
-      --extra-vars "enable_ssl=true postgres_pwd=$POSTGRES_PASSWORD enable_block_storage=$ENABLE_BLOCK_STORAGE enable_s3_storage=$ENABLE_S3_STORAGE s3_key=$SPACES_ACCESS_KEY_ID s3_secret=$SPACES_SECRET_ACCESS_KEY s3_bucket=$SPACES_BUCKET_NAME s3_region=$DO_REGION domain=$DOMAIN_NAME joplin_sub=$JOPLIN_SUBDOMAIN trilium_sub=$TRILIUM_SUBDOMAIN certbot_mode=$CERTBOT_MODE acme_email=$ACME_EMAIL mailer_enabled=${MAILER_ENABLED:-false} mailer_host=${MAILER_HOST:-} mailer_port=${MAILER_PORT:-} mailer_secure=${MAILER_SECURE:-false} mailer_user=${MAILER_USER:-} mailer_password=${MAILER_PASSWORD:-} mailer_from_email=${MAILER_FROM_EMAIL:-} mailer_from_name=${MAILER_FROM_NAME:-}"
+    # 3. Final Ansible Pass (Enabling SSL only if not dry-run and certificates exist)
+    if [ "$SSL_ENABLED" = "true" ]; then
+        # We pass enable_ssl=true as an extra-var so the playbook picks the .ssl.j2 templates
+        ansible-playbook -i "$IP," ansible/playbook.yml \
+          --user root \
+          --private-key "$PRIVATE_KEY" \
+          --ssh-common-args='-o IdentitiesOnly=yes' \
+          --extra-vars "enable_ssl=true postgres_pwd=$POSTGRES_PASSWORD enable_block_storage=$ENABLE_BLOCK_STORAGE enable_s3_storage=$ENABLE_S3_STORAGE s3_key=$SPACES_ACCESS_KEY_ID s3_secret=$SPACES_SECRET_ACCESS_KEY s3_bucket=$SPACES_BUCKET_NAME s3_region=$DO_REGION domain=$DOMAIN_NAME joplin_sub=$JOPLIN_SUBDOMAIN trilium_sub=$TRILIUM_SUBDOMAIN certbot_mode=$CERTBOT_MODE acme_email=$ACME_EMAIL mailer_enabled=${MAILER_ENABLED:-false} mailer_host=${MAILER_HOST:-} mailer_port=${MAILER_PORT:-} mailer_secure=${MAILER_SECURE:-false} mailer_user=${MAILER_USER:-} mailer_password=${MAILER_PASSWORD:-} mailer_from_email=${MAILER_FROM_EMAIL:-} mailer_from_name=${MAILER_FROM_NAME:-}"
+    else
+        echo "⏭️  Skipping SSL enablement (dry-run mode or no certificates)."
+    fi
 
 echo "🎉 DEPLOYMENT COMPLETE!"
 echo "------------------------------------------------"
