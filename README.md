@@ -1,19 +1,18 @@
 # Notes Infrastructure as Code
 
-A complete Infrastructure as Code (IaC) solution for deploying a self-hosted notes stack on DigitalOcean. This project automates the provisioning and configuration of **Joplin Server** and **Trilium Notes** using Terraform and Ansible.
+A complete Infrastructure as Code (IaC) solution for deploying a self-hosted notes stack on DigitalOcean. This project automates the provisioning and configuration of **Joplin Server** using Terraform and Ansible.
 
 ## What This Project Does
 
 This project deploys a production-ready notes hosting stack that includes:
 
 - **Joplin Server**: A note-taking and to-do application with synchronization capabilities
-- **Trilium Notes**: A hierarchical note-taking application with advanced features
 - **PostgreSQL**: Database backend for Joplin
 - **Nginx Reverse Proxy**: SSL termination and routing with Let's Encrypt certificates
 - **Optional Block Storage**: Persistent volume for data storage
 - **Optional S3 Storage**: DigitalOcean Spaces integration for Joplin attachments
 
-Both applications are accessible via HTTPS with automatic SSL certificate management.
+The application is accessible via HTTPS with automatic SSL certificate management.
 
 ## How It Works
 
@@ -34,7 +33,6 @@ The deployment process follows these steps:
 
 3. **Docker Compose** runs the services:
    - Joplin Server (port 22300)
-   - Trilium Notes (port 8080)
    - PostgreSQL database
    - Nginx reverse proxy (ports 80/443)
 
@@ -133,11 +131,11 @@ DO_REGION=nyc3
 # Cloudflare Configuration
 CLOUDFLARE_API_TOKEN=your_cloudflare_api_token
 CLOUDFLARE_ZONE_ID=your_cloudflare_zone_id
+CLOUDFLARE_PROXY_DOMAIN=false
 
 # Domain Configuration
 DOMAIN_NAME=yourdomain.com
 JOPLIN_SUBDOMAIN=joplin
-TRILIUM_SUBDOMAIN=trilium
 
 # Database Configuration
 POSTGRES_PASSWORD=your_secure_password
@@ -163,6 +161,10 @@ SPACES_BUCKET_NAME=your-bucket-name
 MAILER_ENABLED=false
 MAILER_HOST=smtp.example.com
 MAILER_PORT=587
+# IMPORTANT: MAILER_SECURE must match your port:
+#   - Port 587: Use MAILER_SECURE=false (STARTTLS)
+#   - Port 465: Use MAILER_SECURE=true (SSL)
+#   - Port 25: Use MAILER_SECURE=false (usually unencrypted)
 MAILER_SECURE=false
 MAILER_USER=your_smtp_username
 MAILER_PASSWORD=your_smtp_password
@@ -218,7 +220,6 @@ The script will:
 | `CLOUDFLARE_ZONE_ID` | Your Cloudflare zone ID (found in domain overview page) |
 | `DOMAIN_NAME` | Your root domain (e.g., `example.com`) |
 | `JOPLIN_SUBDOMAIN` | Subdomain for Joplin (e.g., `joplin` creates `joplin.example.com`) |
-| `TRILIUM_SUBDOMAIN` | Subdomain for Trilium (e.g., `trilium` creates `trilium.example.com`) |
 | `POSTGRES_PASSWORD` | Strong password for the PostgreSQL database |
 | `DO_REGION` | DigitalOcean region (e.g., `nyc3`, `sfo3`, `sgp1`) |
 | `SSH_PRIVATE_KEY_PATH` | Full path to your SSH private key file |
@@ -230,6 +231,7 @@ The script will:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `CLOUDFLARE_PROXY_DOMAIN` | Enable Cloudflare proxy for the DNS record (`true` = proxied through Cloudflare, `false` = DNS-only). **Note:** If proxied, SSL certificates must be valid for Cloudflare to work properly. | `false` |
 | `ENABLE_BLOCK_STORAGE` | Enable 20GB block storage volume for persistent data | `false` |
 | `ENABLE_S3_STORAGE` | Enable S3 storage for Joplin attachments | `false` |
 | `SPACES_ACCESS_KEY_ID` | DigitalOcean Spaces access key (required if `ENABLE_S3_STORAGE=true`) | - |
@@ -237,8 +239,8 @@ The script will:
 | `SPACES_BUCKET_NAME` | DigitalOcean Spaces bucket name (required if `ENABLE_S3_STORAGE=true`) | - |
 | `MAILER_ENABLED` | Enable email functionality for Joplin Server (user registration, password reset, etc.) | `false` |
 | `MAILER_HOST` | SMTP server hostname (required if `MAILER_ENABLED=true`) | - |
-| `MAILER_PORT` | SMTP server port (typically 587 for TLS, 465 for SSL, 25 for unencrypted) | - |
-| `MAILER_SECURE` | Use TLS/SSL for SMTP connection (`true` for SSL, `false` for STARTTLS) | `false` |
+| `MAILER_PORT` | SMTP server port (typically 587 for STARTTLS, 465 for SSL, 25 for unencrypted) | - |
+| `MAILER_SECURE` | Use SSL/TLS for SMTP connection. **Important:** Use `true` for port 465 (SSL), `false` for port 587 (STARTTLS). Using the wrong combination will cause SSL errors. | `false` |
 | `MAILER_USER` | SMTP authentication username (required if `MAILER_ENABLED=true`) | - |
 | `MAILER_PASSWORD` | SMTP authentication password (required if `MAILER_ENABLED=true`) | - |
 | `MAILER_FROM_EMAIL` | Email address to send emails from (required if `MAILER_ENABLED=true`) | - |
@@ -290,7 +292,6 @@ docker-compose logs -f
 
 # View logs for a specific service
 docker-compose logs -f joplin-server
-docker-compose logs -f trilium-server
 
 # Restart a service
 docker-compose restart joplin-server
@@ -326,31 +327,18 @@ docker image prune -f  # Clean up old images
 docker exec joplin-db pg_dump -U joplin joplin > ~/joplin_backup_$(date +%F).sql
 ```
 
-**Backup Trilium:**
-```bash
-cp /opt/notes-stack/data/trilium/document.db ~/trilium_backup_$(date +%F).db
-```
-
 **Restore Joplin:**
 ```bash
 cat ~/joplin_backup_2024-01-01.sql | docker exec -i joplin-db psql -U joplin joplin
-```
-
-**Restore Trilium:**
-```bash
-cp ~/trilium_backup_2024-01-01.db /opt/notes-stack/data/trilium/document.db
-docker-compose restart trilium-server
 ```
 
 ### Data Locations
 
 - **Local storage**: `/opt/notes-stack/data/`
   - Joplin database: `/opt/notes-stack/data/joplin-db/`
-  - Trilium data: `/opt/notes-stack/data/trilium/`
 
 - **Block storage** (if enabled): `/mnt/notes_data/`
   - Joplin database: `/mnt/notes_data/joplin-db/`
-  - Trilium data: `/mnt/notes_data/trilium/`
 
 ## Application Links
 
@@ -362,15 +350,6 @@ docker-compose restart trilium-server
 - **Docker Image**: https://hub.docker.com/r/joplin/server
 
 After deployment, access your Joplin Server at: `https://joplin.yourdomain.com`
-
-### Trilium Notes
-
-- **Official Website**: https://trilium.app/
-- **Documentation**: https://github.com/zadam/trilium/wiki
-- **GitHub Repository**: https://github.com/zadam/trilium
-- **Docker Image**: https://hub.docker.com/r/triliumnext/notes
-
-After deployment, access your Trilium instance at: `https://trilium.yourdomain.com`
 
 ## Destroying Infrastructure
 
@@ -408,9 +387,23 @@ To tear down all resources:
 - Check database logs: `docker logs joplin-db`
 - Verify password in environment variables
 
+### Email/SSL Connection Issues
+
+If you see errors like "wrong version number" or "SSL routines" in the email service logs:
+
+- **Port 587**: Must use `MAILER_SECURE=false` (STARTTLS - upgrades plain connection to TLS)
+- **Port 465**: Must use `MAILER_SECURE=true` (SSL - encrypted from the start)
+- **Port 25**: Usually use `MAILER_SECURE=false` (unencrypted, though some servers support STARTTLS)
+
+**Common mistake**: Using port 587 with `MAILER_SECURE=true` or port 465 with `MAILER_SECURE=false` will cause SSL errors.
+
+To fix:
+1. Check your SMTP provider's documentation for the correct port and encryption method
+2. Update your `.env` file with the correct `MAILER_PORT` and `MAILER_SECURE` combination
+3. Redeploy: `./setup.sh` (or restart the container: `docker restart joplin-server`)
+
 ## Support
 
 For issues related to:
 - **Joplin**: https://discourse.joplinapp.org/
-- **Trilium**: https://github.com/zadam/trilium/issues
 - **This project**: Open an issue in the repository

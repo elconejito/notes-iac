@@ -22,8 +22,8 @@ variable "cloudflare_api_token" {}
 variable "cloudflare_zone_id" {}
 variable "domain" {}
 variable "joplin_subdomain" {}
-variable "trilium_subdomain" {}
 variable "enable_block_storage" { type = bool }
+variable "cloudflare_proxy_domain" { type = bool; default = false }
 
 # 3. DIGITALOCEAN HARDWARE
 # 1. Get the fingerprint of your local public key
@@ -66,10 +66,16 @@ resource "digitalocean_droplet" "note_server" {
   image  = "ubuntu-24-04-x64"
   name   = "notes-cabinet"
   region = var.do_region
-  size   = "s-1vcpu-2gb"
+  size   = "s-1vcpu-1gb"
   # This assumes you have an SSH key added to your DO account
   # Replace with your actual key name or ID
   ssh_keys = [local.final_ssh_key_id]
+
+  # Force replacement instead of resize when size changes
+  # DigitalOcean cannot resize when current disk is larger than target droplet's disk
+  lifecycle {
+    create_before_destroy = false
+  }
 }
 
 resource "digitalocean_volume_attachment" "notes_attach" {
@@ -124,16 +130,7 @@ resource "cloudflare_dns_record" "joplin" {
   name    = var.joplin_subdomain
   content = digitalocean_droplet.note_server.ipv4_address # "value" changed to "content"
   type    = "A"
-  proxied = false
-  ttl     = 60
-}
-
-resource "cloudflare_dns_record" "trilium" {
-  zone_id = var.cloudflare_zone_id
-  name    = var.trilium_subdomain
-  content = digitalocean_droplet.note_server.ipv4_address # "value" changed to "content"
-  type    = "A"
-  proxied = false
+  proxied = var.cloudflare_proxy_domain
   ttl     = 60
 }
 

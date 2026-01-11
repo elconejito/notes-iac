@@ -44,6 +44,61 @@
         state: link
       ignore_errors: yes
 
+    # 2.5. SETUP SWAP FILE (to prevent OOM errors on low-resource droplets)
+    - name: Check if swap already exists
+      command: swapon --show
+      register: swap_check
+      changed_when: false
+      failed_when: false
+
+    - name: Create swap file (2GB for 1GB RAM droplet)
+      command: fallocate -l 2G /swapfile
+      args:
+        creates: /swapfile
+      when: swap_check.rc != 0 or swap_check.stdout == ""
+
+    - name: Set swap file permissions
+      file:
+        path: /swapfile
+        mode: '0600'
+        owner: root
+        group: root
+      when: swap_check.rc != 0 or swap_check.stdout == ""
+
+    - name: Format swap file
+      command: mkswap /swapfile
+      args:
+        creates: /swapfile
+      when: swap_check.rc != 0 or swap_check.stdout == ""
+
+    - name: Enable swap file
+      command: swapon /swapfile
+      when: swap_check.rc != 0 or swap_check.stdout == ""
+
+    - name: Make swap permanent in /etc/fstab
+      lineinfile:
+        path: /etc/fstab
+        line: '/swapfile none swap sw 0 0'
+        regexp: '^/swapfile'
+        state: present
+      when: swap_check.rc != 0 or swap_check.stdout == ""
+
+    - name: Set swappiness to 10 (reduce swap usage, prefer RAM)
+      sysctl:
+        name: vm.swappiness
+        value: '10'
+        state: present
+        sysctl_set: yes
+        reload: yes
+
+    - name: Set swap pressure to 50 (balance between cache and swap)
+      sysctl:
+        name: vm.vfs_cache_pressure
+        value: '50'
+        state: present
+        sysctl_set: yes
+        reload: yes
+
     # 3. OPTIONAL BLOCK STORAGE SETUP
     - name: Handle Block Storage Mounting
       block:
@@ -92,7 +147,32 @@
         - "{{ stack_path }}"
         - "{{ stack_path }}/nginx"
         - "{{ (enable_block_storage | bool) | ternary(mount_path + '/joplin-db', local_data + '/joplin-db') }}"
-        - "{{ (enable_block_storage | bool) | ternary(mount_path + '/trilium', local_data + '/trilium') }}"
+
+    - name: Create optimized PostgreSQL configuration for low-resource droplet
+      copy:
+        dest: "{{ stack_path }}/postgresql.conf"
+        content: |
+          # PostgreSQL configuration optimized for 1GB RAM droplet with few concurrent users
+          # Memory settings (total ~200MB for PostgreSQL)
+          shared_buffers = 64MB
+          effective_cache_size = 192MB
+          maintenance_work_mem = 32MB
+          work_mem = 4MB
+          
+          # Connection settings (few users expected)
+          max_connections = 20
+          
+          # Performance settings
+          checkpoint_completion_target = 0.9
+          wal_buffers = 16MB
+          default_statistics_target = 100
+          
+          # Logging (minimal for low-resource)
+          logging_collector = off
+          log_statement = 'none'
+          log_duration = off
+          log_line_prefix = ''
+        mode: '0644'
 
     - name: Deploy Docker Compose file
       template:
@@ -106,7 +186,6 @@
         dest: "{{ stack_path }}/nginx/{{ item }}"
       loop:
         - joplin.conf
-        - trilium.conf
       register: config_updated
 
     # 6. START STACK

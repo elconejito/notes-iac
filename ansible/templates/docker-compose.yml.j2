@@ -15,15 +15,12 @@ services:
     depends_on:
       joplin-server:
         condition: service_started
-      trilium:
-        condition: service_started
-
-  trilium:
-    image: triliumnext/notes:latest
-    container_name: trilium-server
-    restart: unless-stopped
-    volumes:
-      - {{ (enable_block_storage | bool) | ternary('/mnt/notes_data/trilium', '/opt/notes-stack/data/trilium') }}:/home/node/trilium-data
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+        reservations:
+          memory: 32M
 
   joplin-db:
     image: postgres:16
@@ -35,6 +32,14 @@ services:
       POSTGRES_DB: "joplin"
     volumes:
       - {{ (enable_block_storage | bool) | ternary('/mnt/notes_data/joplin-db', '/opt/notes-stack/data/joplin-db') }}:/var/lib/postgresql/data
+      - /opt/notes-stack/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf", "-c", "shared_buffers=64MB", "-c", "effective_cache_size=192MB", "-c", "maintenance_work_mem=32MB", "-c", "work_mem=4MB", "-c", "max_connections=20"]
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
 
   joplin-server:
     image: joplin/server:latest
@@ -50,13 +55,25 @@ services:
       POSTGRES_PASSWORD: "{{ postgres_pwd }}"
       POSTGRES_HOST: "joplin-db"
       STORAGE_DRIVER: "{% if enable_s3_storage | bool %}Type=S3; Region={{ s3_region }}; AccessKeyId={{ s3_key }}; SecretAccessKey={{ s3_secret }}; Bucket={{ s3_bucket }}; Endpoint=https://{{ s3_region }}.digitaloceanspaces.com{% else %}Type=Database{% endif %}"
+      # Limit Node.js heap memory to 384MB to prevent OOM on low-resource droplets
+      NODE_OPTIONS: "--max-old-space-size=384"
 {% if mailer_enabled | default(false) | bool %}
       MAILER_ENABLED: "1"
       MAILER_HOST: "{{ mailer_host }}"
       MAILER_PORT: "{{ mailer_port }}"
+      # MAILER_SECURE: true for port 465 (SSL), false for port 587 (STARTTLS)
+      # Using wrong combination (e.g., 587 with true or 465 with false) causes SSL errors
       MAILER_SECURE: "{{ mailer_secure }}"
       MAILER_USER: "{{ mailer_user }}"
       MAILER_PASSWORD: "{{ mailer_password }}"
       MAILER_FROM_EMAIL: "{{ mailer_from_email }}"
       MAILER_FROM_NAME: "{{ mailer_from_name }}"
+      MAILER_NOREPLY_EMAIL: "{{ mailer_noreply_email }}"
+      MAILER_NOREPLY_NAME: "{{ mailer_noreply_name }}"
 {% endif -%}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M

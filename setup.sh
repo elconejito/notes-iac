@@ -50,7 +50,7 @@ if [[ "$1" == "--destroy" ]]; then
       -var="cloudflare_zone_id=${CLOUDFLARE_ZONE_ID}" \
       -var="domain=${DOMAIN_NAME}" \
       -var="joplin_subdomain=${JOPLIN_SUBDOMAIN}" \
-      -var="trilium_subdomain=${TRILIUM_SUBDOMAIN}"
+      -var="cloudflare_proxy_domain=${CLOUDFLARE_PROXY_DOMAIN:-false}"
     
     if [ $? -eq 0 ]; then
         echo "✅ Infrastructure successfully destroyed!"
@@ -79,7 +79,6 @@ CORE_VARS=(
     "CLOUDFLARE_ZONE_ID"
     "DOMAIN_NAME"
     "JOPLIN_SUBDOMAIN"
-    "TRILIUM_SUBDOMAIN"
     "POSTGRES_PASSWORD"
     "DO_REGION"
     "SSH_PRIVATE_KEY_PATH"
@@ -96,10 +95,10 @@ S3_VARS=(
 )
 
 # Variables only needed if email is enabled
+# Note: MAILER_SECURE is optional (defaults to false), others are required
 MAILER_VARS=(
     "MAILER_HOST"
     "MAILER_PORT"
-    "MAILER_SECURE"
     "MAILER_USER"
     "MAILER_PASSWORD"
     "MAILER_FROM_EMAIL"
@@ -171,7 +170,10 @@ echo "🛡️ SSH Key permissions verified ($PERMS). Proceeding..."
 echo "🚀 Step 1: Provisioning hardware via Terraform..."
 cd terraform
 terraform init
-terraform apply -auto-approve \
+
+# Try normal apply first
+echo "📋 Applying Terraform configuration..."
+TERRAFORM_OUTPUT=$(terraform apply -auto-approve \
   -var="do_token=$DIGITALOCEAN_TOKEN" \
   -var="ssh_public_key_path=$PUBLIC_KEY" \
   -var="enable_block_storage=$ENABLE_BLOCK_STORAGE" \
@@ -179,11 +181,40 @@ terraform apply -auto-approve \
   -var="cloudflare_zone_id=$CLOUDFLARE_ZONE_ID" \
   -var="domain=$DOMAIN_NAME" \
   -var="joplin_subdomain=$JOPLIN_SUBDOMAIN" \
-  -var="trilium_subdomain=$TRILIUM_SUBDOMAIN"
+  -var="cloudflare_proxy_domain=${CLOUDFLARE_PROXY_DOMAIN:-false}" 2>&1)
+TERRAFORM_EXIT=$?
 
-# Check the exit status of the last command ($?)
-if [ $? -ne 0 ]; then
-    echo "❌ Error: Terraform failed to provision resources. Exiting."
+# Check if the error is related to droplet resize (DigitalOcean limitation)
+if [ $TERRAFORM_EXIT -ne 0 ]; then
+    # Check for resize-related errors
+    if echo "$TERRAFORM_OUTPUT" | grep -qi "smaller disk\|cannot.*resize\|disk.*larger\|resize.*not.*supported\|This size is not available\|Error resizing droplet"; then
+        echo ""
+        echo "⚠️  Detected droplet resize error. DigitalOcean cannot resize when target has smaller disk."
+        echo "🔄 Automatically forcing replacement (destroy and recreate)..."
+        echo "💡 This will delete the existing droplet and create a new one with the new size."
+        echo ""
+        terraform apply -auto-approve -replace=digitalocean_droplet.note_server \
+          -var="do_token=$DIGITALOCEAN_TOKEN" \
+          -var="ssh_public_key_path=$PUBLIC_KEY" \
+          -var="enable_block_storage=$ENABLE_BLOCK_STORAGE" \
+          -var="cloudflare_api_token=$CLOUDFLARE_API_TOKEN" \
+          -var="cloudflare_zone_id=$CLOUDFLARE_ZONE_ID" \
+          -var="domain=$DOMAIN_NAME" \
+          -var="joplin_subdomain=$JOPLIN_SUBDOMAIN" \
+          -var="cloudflare_proxy_domain=${CLOUDFLARE_PROXY_DOMAIN:-false}"
+        TERRAFORM_EXIT=$?
+    else
+        # Different error, show the output
+        echo "$TERRAFORM_OUTPUT"
+    fi
+fi
+
+# Check the exit status
+if [ $TERRAFORM_EXIT -ne 0 ]; then
+    echo "❌ Error: Terraform failed to provision resources."
+    echo "💡 If you're trying to resize the droplet, you may need to manually destroy and recreate:"
+    echo "   ./setup.sh --destroy"
+    echo "   ./setup.sh"
     exit 1
 fi
 
@@ -223,7 +254,7 @@ ansible-playbook -i "$IP," ansible/playbook.yml \
   --user root \
   --private-key "$PRIVATE_KEY" \
   --ssh-common-args='-o IdentitiesOnly=yes' \
-  --extra-vars "postgres_pwd=$POSTGRES_PASSWORD enable_block_storage=$ENABLE_BLOCK_STORAGE enable_s3_storage=$ENABLE_S3_STORAGE s3_key=$SPACES_ACCESS_KEY_ID s3_secret=$SPACES_SECRET_ACCESS_KEY s3_bucket=$SPACES_BUCKET_NAME s3_region=$DO_REGION domain=$DOMAIN_NAME joplin_sub=$JOPLIN_SUBDOMAIN trilium_sub=$TRILIUM_SUBDOMAIN certbot_mode=$CERTBOT_MODE acme_email=$ACME_EMAIL mailer_enabled=${MAILER_ENABLED:-false} mailer_host=${MAILER_HOST:-} mailer_port=${MAILER_PORT:-} mailer_secure=${MAILER_SECURE:-false} mailer_user=${MAILER_USER:-} mailer_password=${MAILER_PASSWORD:-} mailer_from_email=${MAILER_FROM_EMAIL:-} mailer_from_name=${MAILER_FROM_NAME:-}"
+  --extra-vars "postgres_pwd=$POSTGRES_PASSWORD enable_block_storage=$ENABLE_BLOCK_STORAGE enable_s3_storage=$ENABLE_S3_STORAGE s3_key=$SPACES_ACCESS_KEY_ID s3_secret=$SPACES_SECRET_ACCESS_KEY s3_bucket=$SPACES_BUCKET_NAME s3_region=$DO_REGION domain=$DOMAIN_NAME joplin_sub=$JOPLIN_SUBDOMAIN certbot_mode=$CERTBOT_MODE acme_email=$ACME_EMAIL mailer_enabled=${MAILER_ENABLED:-false} mailer_host=${MAILER_HOST:-} mailer_port=${MAILER_PORT:-} mailer_secure=${MAILER_SECURE:-false} mailer_user=${MAILER_USER:-} mailer_password=${MAILER_PASSWORD:-} mailer_from_email=${MAILER_FROM_EMAIL:-} mailer_from_name=${MAILER_FROM_NAME:-} mailer_noreply_email=${MAILER_NOREPLY_EMAIL:-} mailer_noreply_name=${MAILER_NOREPLY_NAME:-}"
 
 # Add this check right after the ansible-playbook command
 if [ $? -ne 0 ]; then
@@ -248,12 +279,10 @@ fi
 
 # 1. Check if certificates exist ON THE SERVER
 # We use SSH to check the directory status on the remote IP
-# Check if both certificates exist
 JOPLIN_CERT_EXISTS=$(ssh -i "$PRIVATE_KEY" -o IdentitiesOnly=yes root@$IP "[ -d /etc/letsencrypt/live/$JOPLIN_SUBDOMAIN.$DOMAIN_NAME ] && echo 'yes' || echo 'no'")
-TRILIUM_CERT_EXISTS=$(ssh -i "$PRIVATE_KEY" -o IdentitiesOnly=yes root@$IP "[ -d /etc/letsencrypt/live/$TRILIUM_SUBDOMAIN.$DOMAIN_NAME ] && echo 'yes' || echo 'no'")
 
-if [ "$JOPLIN_CERT_EXISTS" != "yes" ] || [ "$TRILIUM_CERT_EXISTS" != "yes" ]; then
-    echo "📜 Missing certificates. Requesting SSL certificates for each domain..."
+if [ "$JOPLIN_CERT_EXISTS" != "yes" ]; then
+    echo "📜 Missing certificate. Requesting SSL certificate..."
     
     # 2. Run Certbot via Docker ON THE SERVER for Joplin domain (if missing)
     if [ "$JOPLIN_CERT_EXISTS" != "yes" ]; then
@@ -285,36 +314,6 @@ if [ "$JOPLIN_CERT_EXISTS" != "yes" ] || [ "$TRILIUM_CERT_EXISTS" != "yes" ]; th
         echo "  - Certificate for $JOPLIN_SUBDOMAIN.$DOMAIN_NAME already exists."
     fi
 
-    # 3. Run Certbot via Docker ON THE SERVER for Trilium domain (if missing)
-    if [ "$TRILIUM_CERT_EXISTS" != "yes" ]; then
-        # Build certbot command with appropriate flags based on CERTBOT_MODE
-        CERTBOT_CMD="certbot/certbot certonly --webroot -w /var/www/certbot -d $TRILIUM_SUBDOMAIN.$DOMAIN_NAME --email $ACME_EMAIL --agree-tos --no-eff-email --non-interactive"
-        
-        # Add appropriate flags based on CERTBOT_MODE
-        if [ "$CERTBOT_MODE" = "dry-run" ]; then
-            CERTBOT_CMD="$CERTBOT_CMD --dry-run"
-            echo "  - Running DRY-RUN for certificate request for $TRILIUM_SUBDOMAIN.$DOMAIN_NAME..."
-        elif [ "$CERTBOT_MODE" = "staging" ]; then
-            CERTBOT_CMD="$CERTBOT_CMD --staging"
-            echo "  - Requesting STAGING certificate for $TRILIUM_SUBDOMAIN.$DOMAIN_NAME..."
-        else
-            # production mode (default)
-            echo "  - Requesting PRODUCTION certificate for $TRILIUM_SUBDOMAIN.$DOMAIN_NAME..."
-        fi
-        
-        ssh -i "$PRIVATE_KEY" -o IdentitiesOnly=yes root@$IP "docker run --rm \
-          -v /etc/letsencrypt:/etc/letsencrypt \
-          -v /opt/notes-stack/certbot-www:/var/www/certbot \
-          $CERTBOT_CMD"
-
-        if [ $? -ne 0 ]; then
-            echo "❌ Error: Certbot failed to obtain certificate for $TRILIUM_SUBDOMAIN.$DOMAIN_NAME."
-            exit 1
-        fi
-    else
-        echo "  - Certificate for $TRILIUM_SUBDOMAIN.$DOMAIN_NAME already exists."
-    fi
-
     if [ "$CERTBOT_MODE" = "dry-run" ]; then
         echo "⚠️  DRY-RUN completed. No real certificates were created."
         echo "💡 Set CERTBOT_MODE=staging or CERTBOT_MODE=production in your .env file to create real certificates."
@@ -341,7 +340,7 @@ fi
           --user root \
           --private-key "$PRIVATE_KEY" \
           --ssh-common-args='-o IdentitiesOnly=yes' \
-          --extra-vars "enable_ssl=true postgres_pwd=$POSTGRES_PASSWORD enable_block_storage=$ENABLE_BLOCK_STORAGE enable_s3_storage=$ENABLE_S3_STORAGE s3_key=$SPACES_ACCESS_KEY_ID s3_secret=$SPACES_SECRET_ACCESS_KEY s3_bucket=$SPACES_BUCKET_NAME s3_region=$DO_REGION domain=$DOMAIN_NAME joplin_sub=$JOPLIN_SUBDOMAIN trilium_sub=$TRILIUM_SUBDOMAIN certbot_mode=$CERTBOT_MODE acme_email=$ACME_EMAIL mailer_enabled=${MAILER_ENABLED:-false} mailer_host=${MAILER_HOST:-} mailer_port=${MAILER_PORT:-} mailer_secure=${MAILER_SECURE:-false} mailer_user=${MAILER_USER:-} mailer_password=${MAILER_PASSWORD:-} mailer_from_email=${MAILER_FROM_EMAIL:-} mailer_from_name=${MAILER_FROM_NAME:-}"
+          --extra-vars "enable_ssl=true postgres_pwd=$POSTGRES_PASSWORD enable_block_storage=$ENABLE_BLOCK_STORAGE enable_s3_storage=$ENABLE_S3_STORAGE s3_key=$SPACES_ACCESS_KEY_ID s3_secret=$SPACES_SECRET_ACCESS_KEY s3_bucket=$SPACES_BUCKET_NAME s3_region=$DO_REGION domain=$DOMAIN_NAME joplin_sub=$JOPLIN_SUBDOMAIN certbot_mode=$CERTBOT_MODE acme_email=$ACME_EMAIL mailer_enabled=${MAILER_ENABLED:-false} mailer_host=${MAILER_HOST:-} mailer_port=${MAILER_PORT:-} mailer_secure=${MAILER_SECURE:-false} mailer_user=${MAILER_USER:-} mailer_password=${MAILER_PASSWORD:-} mailer_from_email=${MAILER_FROM_EMAIL:-} mailer_from_name=${MAILER_FROM_NAME:-} mailer_noreply_email=${MAILER_NOREPLY_EMAIL:-} mailer_noreply_name=${MAILER_NOREPLY_NAME:-}"
     else
         echo "⏭️  Skipping SSL enablement (dry-run mode or no certificates)."
     fi
@@ -349,5 +348,4 @@ fi
 echo "🎉 DEPLOYMENT COMPLETE!"
 echo "------------------------------------------------"
 echo "Joplin:  https://$JOPLIN_SUBDOMAIN.$DOMAIN_NAME"
-echo "Trilium: https://$TRILIUM_SUBDOMAIN.$DOMAIN_NAME"
 echo "------------------------------------------------"
